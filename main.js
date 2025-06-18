@@ -1,198 +1,231 @@
-// main.js  ── swimmer demo ─────────────────────────────────────────────────
+// Import necessary Three.js components
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { GLTFLoader    } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { Water } from 'three/addons/objects/Water.js';
+import { Sky } from 'three/addons/objects/Sky.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-const scene  = new THREE.Scene();
-scene.background = new THREE.Color(0x202533);           // dark water-ish
-const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 1000);
-camera.position.set( 5, 2, 0 );                         // watch from the side
-
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(innerWidth, innerHeight);
-document.body.appendChild(renderer.domElement);
-
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enablePan   = false;
-controls.enableZoom  = false;
-controls.autoRotate  = true;                            // slowly circle the swimmer
-controls.autoRotateSpeed = 0.5;
-
-// ─── helpers for time + debug overlay ─────────────────────────────────────
+let container, camera, scene, renderer, controls, water, sun;
 const clock = new THREE.Clock();
-let   skeletonHelper;       // so we can see the rig while tuning
+let skeletonHelper, swimmerModel;
 
-// ─── bone references we'll animate every frame ────────────────────────────
-let lArm,  rArm,
-    lFore, rFore,
-    lHand, rHand,
-    lUpleg, rUpleg,
-    lLeg,   rLeg,
-    lFoot,  rFoot,
-    lShoulder, rShoulder,
-    lHip,     rHip,
-    spine, spine1, spine2;
-    
 
-// ─── load the model ───────────────────────────────────────────────────────
-new GLTFLoader().load('/Masculine_TPose.glb', (gltf) => {
-  const model = gltf.scene;
-  scene.add(model);
 
-  // 1 / Roll the whole body forward so Z faces "down"
-  //model.rotation.z =  Math.PI / 2;      // arms point forward
-  model.rotation.x =  Math.PI / 2;      // face down
-  model.position.y =  1;                // lift a bit above origin
+// Bone references
+let lArm, rArm, lFore, rFore, lHand, rHand, lUpleg, rUpleg, lLeg, rLeg, lFoot, rFoot, lShoulder, rShoulder, spine, spine1, spine2, head;
 
-  // 2 / Grab bones we care about
-  model.traverse((o) => {
-    if (!o.isSkinnedMesh) return;
+// Bobbing constants
+const BOBBING_SPEED = 1.1, BOBBING_AMPLITUDE_Y = 0.3, BOBBING_AMPLITUDE_X = 0.2, SWIM_SPEED = 1, SIDE_TO_SIDE_AMPLITUDE = 0.5;
 
-    // tiny stick-figure overlay for visual debugging
-    skeletonHelper = new THREE.SkeletonHelper(o);
-    skeletonHelper.material.depthTest = false;
-    skeletonHelper.material.opacity   = 0.4;
-    skeletonHelper.material.transparent = true;
-    scene.add(skeletonHelper);
+// Initialize scene
+init();
 
-    // convenient map for name-lookup
-    const bone = {};
-    o.skeleton.bones.forEach(b => bone[b.name.toLowerCase()] = b);
+function init() {
+	container = document.getElementById('container');
 
-    // Arms
-    lArm   = bone['leftarm'];
-    rArm   = bone['rightarm'];
-    lFore  = bone['leftforearm'];
-    rFore  = bone['rightforearm'];
-    lHand  = bone['lefthand'];
-    rHand  = bone['righthand'];
-    lShoulder = bone['leftshoulder'];
-    rShoulder = bone['rightshoulder'];
-    
-    // Legs
-    lUpleg = bone['leftupleg'];
-    rUpleg = bone['rightupleg'];
-    lLeg   = bone['leftleg'];
-    rLeg   = bone['rightleg'];
-    lFoot  = bone['leftfoot'];
-    rFoot  = bone['rightfoot'];
-    lHip   = bone['lefthip'];
-    rHip   = bone['righthip'];
-    
-    // Spine for body roll
-    spine  = bone['spine'];
-    spine1 = bone['spine1'];
-    spine2 = bone['spine2'];
+	// Renderer setup
+	renderer = new THREE.WebGLRenderer({ antialias: true });
+	renderer.setPixelRatio(window.devicePixelRatio);
+	renderer.setSize(window.innerWidth, window.innerHeight);
+	renderer.setAnimationLoop(animate);
+	renderer.toneMapping = THREE.ACESFilmicToneMapping;
+	renderer.toneMappingExposure = 0.5;
+	container.appendChild(renderer.domElement);
 
-    // quick sanity check
-    console.table(Object.fromEntries(
-      ['lArm','rArm','lFore','rFore','lHand','rHand','lUpleg','rUpleg','lLeg','rLeg', 'lFoot','rFoot', 'lShoulder', 'rShoulder', 'lHip', 'rHip', 'spine', 'spine1', 'spine2']
-        .map(k => [k, !!eval(k)] )
-    ));
-  });
-});
+	// Scene
+	scene = new THREE.Scene();
 
-// ─── animation loop ───────────────────────────────────────────────────────
-const SPEED = 1.5;          // global speed multiplier   (≤ 1 = slo-mo)
-const LEG_AMPLITUDE  = Math.PI * 0.20;   // hip swing
-const KNEE_BEND      = -Math.PI * 0.25;
+	// Camera
+	camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 1, 20000);
+	camera.position.set(15, 10, 25);
 
-// Arm animation constants
-const ARM_STROKE_SPEED = 1.0;  // arm stroke frequency
-const ARM_AMPLITUDE = Math.PI * 0.8;  // how far arms swing
-const ELBOW_BEND_MAX = Math.PI * 0.6;  // maximum elbow bend
+	// Sun
+	sun = new THREE.Vector3();
+
+	// Water setup
+	const waterGeometry = new THREE.PlaneGeometry(10000, 10000);
+	water = new Water(waterGeometry, {
+		textureWidth: 512,
+		textureHeight: 512,
+		waterNormals: new THREE.TextureLoader().load('https://threejs.org/examples/textures/waternormals.jpg', function (texture) {
+			texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+		}),
+		sunDirection: new THREE.Vector3(),
+		sunColor: 0xffffff,
+		waterColor: 0x001e0f,
+		distortionScale: 3.7,
+		fog: scene.fog !== undefined
+	});
+	water.rotation.x = -Math.PI / 2;
+	scene.add(water);
+
+	// Skybox setup
+	const sky = new Sky();
+	sky.scale.setScalar(10000);
+	scene.add(sky);
+
+	const skyUniforms = sky.material.uniforms;
+	skyUniforms['turbidity'].value = 10;
+	skyUniforms['rayleigh'].value = 2;
+	skyUniforms['mieCoefficient'].value = 0.005;
+	skyUniforms['mieDirectionalG'].value = 0.8;
+
+	const parameters = { elevation: 3, azimuth: 180 };
+
+	const pmremGenerator = new THREE.PMREMGenerator(renderer);
+	let renderTarget;
+
+	function updateSun() {
+		const phi = THREE.MathUtils.degToRad(90 - parameters.elevation);
+		const theta = THREE.MathUtils.degToRad(parameters.azimuth);
+		sun.setFromSphericalCoords(1, phi, theta);
+
+		sky.material.uniforms['sunPosition'].value.copy(sun);
+		water.material.uniforms['sunDirection'].value.copy(sun).normalize();
+
+		if (renderTarget !== undefined) renderTarget.dispose();
+		renderTarget = pmremGenerator.fromScene(sky);
+		scene.environment = renderTarget.texture;
+	}
+	updateSun();
+
+	// Controls setup
+	controls = new OrbitControls(camera, renderer.domElement);
+	controls.maxPolarAngle = Math.PI * 0.55;
+	controls.target.set(0, 5, 0);
+	controls.minDistance = 10.0;
+	controls.maxDistance = 100.0;
+	controls.enablePan = false;
+	controls.update();
+
+	// Load swimmer model
+	new GLTFLoader().load('Masculine_TPose.glb', (gltf) => {
+		swimmerModel = gltf.scene;
+		scene.add(swimmerModel);
+
+		swimmerModel.rotation.x = Math.PI / 2;
+		swimmerModel.position.y = 0.15;
+		swimmerModel.scale.set(3, 3, 3);
+
+		swimmerModel.traverse((o) => {
+			if (!o.isSkinnedMesh) return;
+
+			skeletonHelper = new THREE.SkeletonHelper(o);
+			skeletonHelper.material.depthTest = false;
+			skeletonHelper.visible = false;
+			scene.add(skeletonHelper);
+
+			const bone = {};
+			o.skeleton.bones.forEach(b => {
+				bone[b.name.replace('mixamorig', '').toLowerCase()] = b;
+			});
+
+			// Bone assignments
+			lArm = bone['leftarm'];
+			rArm = bone['rightarm'];
+			lFore = bone['leftforearm'];
+			rFore = bone['rightforearm'];
+			lHand = bone['lefthand'];
+			rHand = bone['righthand'];
+			lShoulder = bone['leftshoulder'];
+			rShoulder = bone['rightshoulder'];
+
+			lUpleg = bone['leftupleg'];
+			rUpleg = bone['rightupleg'];
+			lLeg = bone['leftleg'];
+			rLeg = bone['rightleg'];
+			lFoot = bone['leftfoot'];
+			rFoot = bone['rightfoot'];
+
+			spine = bone['spine'];
+			spine1 = bone['spine1'];
+			spine2 = bone['spine2'];
+
+			head = bone['head'];
+
+			console.table(Object.fromEntries(
+				['lArm', 'rArm', 'lFore', 'rFore', 'lHand', 'rHand', 'lUpleg', 'rUpleg', 'lLeg', 'rLeg', 'lFoot', 'rFoot', 'lShoulder', 'rShoulder', 'spine', 'spine1', 'spine2', 'head']
+					.map(k => [k, !!eval(k)] )
+			));
+		});
+	});
+
+	// Event listener for resizing
+	window.addEventListener('resize', onWindowResize);
+}
+
+function onWindowResize() {
+	camera.aspect = window.innerWidth / window.innerHeight;
+	camera.updateProjectionMatrix();
+	renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+const SPEED = 2.5;
+const LEG_AMPLITUDE = Math.PI * 0.20;
+const KNEE_BEND = -Math.PI * 0.25;
+const ARM_STROKE_SPEED = 1.0;
+const ELBOW_BEND_MAX = Math.PI * 0.2;
 
 function animate() {
-  requestAnimationFrame(animate);
+	const t = clock.getElapsedTime() * SPEED;
 
-  const t = clock.getElapsedTime() * SPEED;   // seconds * speed
-  const legSwing = Math.sin(t*2) * LEG_AMPLITUDE;  // faster flutter kick
+	if (swimmerModel) {
+		// Bobbing animations
+		const bobbingY = Math.sin(t * BOBBING_SPEED) * BOBBING_AMPLITUDE_Y;
+		const bobbingX = Math.sin(t * BOBBING_SPEED * 1) * BOBBING_AMPLITUDE_X;
+		swimmerModel.position.x = bobbingX;
+		swimmerModel.position.z += SWIM_SPEED * 0.016;
+		const sideMotion = Math.sin(t * 0.5) * SIDE_TO_SIDE_AMPLITUDE;
+		swimmerModel.position.x += sideMotion * 0.1;
+	}
 
-  // Arm stroke timing - arms are opposite to each other
-  const leftArmPhase = t * ARM_STROKE_SPEED;
-  const rightArmPhase = leftArmPhase + Math.PI;  // 180 degrees out of phase
+	if (lArm && rArm && lUpleg) {
+		const legSwing = Math.sin(t * 2) * LEG_AMPLITUDE;
+		const leftArmPhase = t * ARM_STROKE_SPEED;
+		const rightArmPhase = leftArmPhase + Math.PI;
 
-  // ── ARM ANIMATION - Freestyle Swimming Stroke ──────────────────────────
-  if (lArm && rArm && lFore && rFore) {
-    // Left arm stroke cycle
-    const leftArmCycle = Math.sin(leftArmPhase);
-    const leftArmVertical = Math.cos(leftArmPhase);
-    
-    // Right arm stroke cycle  
-    const rightArmCycle = Math.sin(rightArmPhase);
-    const rightArmVertical = Math.cos(rightArmPhase);
-    
-    // For T-pose facing down:
-    // - Y rotation moves arms forward/backward (swimming stroke)
-    // - Z rotation moves arms up/down (recovery/catch)
-    
-    // Upper arm rotation (main stroke movement)
-    // Y-axis: forward/backward stroke motion
-    lArm.rotation.y = leftArmCycle * Math.PI * 0.6;     // forward stroke
-    rArm.rotation.y = rightArmCycle * Math.PI * 0.6;   // forward stroke
-    
-    // Z-axis: up/down motion for recovery and entry
-    lArm.rotation.z = leftArmVertical * Math.PI * 0.4;  // up for recovery
-    rArm.rotation.z = -rightArmVertical * Math.PI * 0.4; // opposite direction
-    
-    // Shoulder adjustments
-    if (lShoulder && rShoulder) {
-      // Shoulders help with the stroke motion
-      lShoulder.rotation.y = leftArmCycle * 0.3;
-      rShoulder.rotation.y = rightArmCycle * 0.3;
-      
-      // Slight shoulder lift during recovery
-      lShoulder.rotation.z = Math.max(0, leftArmVertical) * 0.2;
-      rShoulder.rotation.z = Math.max(0, -rightArmVertical) * 0.2;
-    }
-    
-    // Elbow bend - bend when pulling through water
-    const leftElbowBend = Math.max(0, -leftArmCycle) * ELBOW_BEND_MAX;
-    const rightElbowBend = Math.max(0, -rightArmCycle) * ELBOW_BEND_MAX;
-    
-    lFore.rotation.y = leftElbowBend;   // Y-axis bend for T-pose
-    rFore.rotation.y = rightElbowBend;
-    
-    // Hand positioning - point hands down during pull phase
-    if (lHand && rHand) {
-      lHand.rotation.z = Math.max(0, -leftArmCycle) * Math.PI * 0.2;
-      rHand.rotation.z = Math.max(0, -rightArmCycle) * Math.PI * 0.2;
-    }
-  }
+		const leftArmCycle = Math.sin(leftArmPhase);
+		const leftArmVertical = Math.cos(leftArmPhase);
+		const rightArmCycle = Math.sin(rightArmPhase);
+		const rightArmVertical = Math.cos(rightArmPhase);
+		
+		lArm.rotation.x = leftArmCycle * Math.PI * 0.2;
+		rArm.rotation.x = rightArmCycle * Math.PI * 0.2;
+		lArm.rotation.z = leftArmVertical * Math.PI * 0.2;
+		rArm.rotation.z = -rightArmVertical * Math.PI * 0.2;
+		
+		const leftElbowBend = Math.max(0, -leftArmCycle) * ELBOW_BEND_MAX * 1.8;
+		const rightElbowBend = Math.max(0, -rightArmCycle) * ELBOW_BEND_MAX * 1.8;
+		lFore.rotation.z = leftElbowBend;
+		rFore.rotation.z = -rightElbowBend;
 
-  // ── BODY ROLL - swimmers roll their body side to side ─────────────────
-  const bodyRoll = Math.sin(t * ARM_STROKE_SPEED * 0.5) * Math.PI * 0.08;
-  if (spine) spine.rotation.y = bodyRoll * 0.3;   // Y-axis for side-to-side roll
-  if (spine1) spine1.rotation.y = bodyRoll * 0.5;
-  if (spine2) spine2.rotation.y = bodyRoll * 0.7;
+		// Body rotation
+		const bodyRoll = -Math.sin(t * ARM_STROKE_SPEED) * Math.PI * 0.08;
+		if (spine) spine.rotation.y = bodyRoll * 0.3;
+		if (spine1) spine1.rotation.y = bodyRoll * 0.5;
+		if (spine2) spine2.rotation.y = bodyRoll * 0.7;
 
-  // ── LEG ANIMATION (existing) ───────────────────────────────────────────
-  // ── hips (upper legs) flutter kick ─────────────────────────────────────
-  if (lUpleg && rUpleg) {
-    lUpleg.rotation.x =  legSwing - Math.PI / 10;
-    rUpleg.rotation.x = -legSwing - Math.PI / 10;  // opposite phase
-  }
+		// Leg animation
+		lUpleg.rotation.x = legSwing - Math.PI / 10;
+		rUpleg.rotation.x = -legSwing - Math.PI / 10;
+		lLeg.rotation.x = Math.max(0, -Math.sin(t * 2)) * KNEE_BEND;
+		rLeg.rotation.x = Math.max(0, Math.sin(t * 2)) * KNEE_BEND;
+		lFoot.rotation.x = Math.max(0, -Math.sin(t * 2)) * Math.PI / 4;
+		rFoot.rotation.x = Math.max(0, Math.sin(t * 2)) * Math.PI / 4;
 
-  // ── knees bend slightly on the up-stroke ───────────────────────────────
-  if (lLeg && rLeg) {
-    lLeg.rotation.x =  Math.max(0, -Math.sin(t*2) ) * KNEE_BEND;
-    rLeg.rotation.x =  Math.max(0,  Math.sin(t*2) ) * KNEE_BEND;
-  }
-  
-  // ── feet: point forward when legs are up ───────────────────────────────
-  if (lFoot && rFoot) {
-    lFoot.rotation.x =  Math.max(0, -Math.sin(t*2) ) * +Math.PI / 4;
-    rFoot.rotation.x =  Math.max(0,  Math.sin(t*2) ) * +Math.PI / 4;
-  }
+		// Head rotation
+		if (head) {
+			head.rotation.x = -Math.PI / 2.7;
+			head.rotation.y = -bodyRoll * 5.2;
+		}
+	}
 
-  controls.update();
-  renderer.render(scene, camera);
+	// Update water
+	water.material.uniforms['time'].value += 1.0 / 60.0;
+
+	// Update controls
+	controls.update();
+
+	// Render the scene
+	renderer.render(scene, camera);
 }
-animate();
-
-// ─── keep full-screen ────────────────────────────────────────────────────
-addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-});

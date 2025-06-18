@@ -1,4 +1,5 @@
 # Three.js Swimmer Animation
+![Swimmer Animation Preview](result.gif)
 
 This project showcases a 3D character performing a realistic freestyle swimming animation within a dynamic water and sky environment, built using Three.js.
 

@@ -1,4 +1,3 @@
-// Import necessary Three.js components
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Water } from 'three/addons/objects/Water.js';
@@ -160,7 +159,7 @@ function onWindowResize() {
 	renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
-const SPEED = 2.5;
+const SPEED = 2.9;
 const LEG_AMPLITUDE = Math.PI * 0.20;
 const KNEE_BEND = -Math.PI * 0.25;
 const ARM_STROKE_SPEED = 1.0;
